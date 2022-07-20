@@ -1,0 +1,61 @@
+#! /usr/bin/env node
+
+const { spawn, ChildProcess } = require('child_process')
+const { readdir, watch } = require('fs/promises')
+
+const excludePrefixes = [
+    'dashboard',
+    'etcd'
+]
+
+/** @type {Map<string, ChildProcess>} */
+const tails = new Map()
+
+/** @param filename {string} */
+function start(filename) {
+    const tail = spawn(
+        '/bin/tail',
+        [
+            '-f',
+            '-n',
+            '0',
+            `/var/log/containers/${filename}`
+        ]
+    )
+    tail.stdout.on('data', (data) => {
+        for (const line of data.toString().split('\n')) {
+            if (line.trim()) console.log(`${filename}:${line}`)
+        }
+    })
+    tail.on('exit', () => {
+        tails.delete(filename)
+        console.log(`logger-main:Exit ${filename}`)
+    })
+    console.log(`logger-main:Start ${filename}`)
+    tails.set(filename, tail)
+}
+
+readdir('/var/log/containers').then((items) => {
+    items
+        .filter((item) => excludePrefixes.every(p => !item.startsWith(p)))
+        .forEach((item) => {
+            start(item)
+        })
+})
+
+
+;(async () => {
+    const watcher = watch('/var/log/containers', {
+        recursive: true
+    })
+
+    for await (const event of watcher) {
+        const filename = event.filename
+        if (Array.from(tails.keys()).includes(filename)) {
+            tails.get(filename).kill()
+            tails.delete(filename)
+        } else {
+            start(filename)
+        }
+    }
+})()

@@ -1,0 +1,11 @@
+[Unit]
+Description=Kubernetes cluster logging service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kube-log
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
