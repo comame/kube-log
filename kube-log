@@ -1,61 +1,90 @@
 #! /usr/bin/env node
 
-const { spawn, ChildProcess } = require('child_process')
-const { readdir, watch } = require('fs/promises')
+const { spawn, ChildProcess } = require("child_process");
+const { readdir, watch } = require("fs/promises");
+const { env } = require("node:process");
+const mysql = require("mysql2");
+const { exit } = require("process");
 
-const excludePrefixes = [
-    'dashboard',
-    'etcd'
-]
+const con = mysql.createConnection({
+  host: env["MYSQL_HOST"],
+  user: env["MYSQL_USER"],
+  password: env["MYSQL_PASSWORD"],
+  database: env["MYSQL_DATABASE"],
+});
 
 /** @type {Map<string, ChildProcess>} */
-const tails = new Map()
+const tails = new Map();
 
 /** @param filename {string} */
 function start(filename) {
-    const tail = spawn(
-        '/bin/tail',
-        [
-            '-f',
-            '-n',
-            '0',
-            `/var/log/containers/${filename}`
-        ]
-    )
-    tail.stdout.on('data', (data) => {
-        for (const line of data.toString().split('\n')) {
-            if (line.trim()) console.log(`${filename}:${line}`)
+  const tail = spawn("/bin/tail", ["-f", `/var/log/containers/${filename}`]);
+  const [pod, ns] = filename.split("_");
+
+  tail.stdout.on("data", (data) => {
+    con.query(
+      "insert into log set ?",
+      {
+        log_value: data.toString(),
+        ns,
+        pod,
+        created_datetime: toDatetimeString(new Date()),
+      },
+      (err) => {
+        if (err) {
+          console.error(err);
+          exit(1);
         }
-    })
-    tail.on('exit', () => {
-        tails.delete(filename)
-        console.log(`logger-main:Exit ${filename}`)
-    })
-    console.log(`logger-main:Start ${filename}`)
-    tails.set(filename, tail)
+      }
+    );
+  });
+  tail.on("exit", () => {
+    tails.delete(filename);
+    console.log(`logger-main:Exit ${filename}`);
+  });
+  console.log(`logger-main:Start ${filename}`);
+  tails.set(filename, tail);
 }
 
-readdir('/var/log/containers').then((items) => {
-    items
-        .filter((item) => excludePrefixes.every(p => !item.startsWith(p)))
-        .forEach((item) => {
-            start(item)
-        })
-})
+readdir("/var/log/containers").then((items) => {
+  items.forEach((item) => {
+    start(item);
+  });
+});
+(async () => {
+  const watcher = watch("/var/log/containers", {
+    recursive: true,
+  });
 
-
-;(async () => {
-    const watcher = watch('/var/log/containers', {
-        recursive: true
-    })
-
-    for await (const event of watcher) {
-        const filename = event.filename
-        if (Array.from(tails.keys()).includes(filename)) {
-            tails.get(filename).kill()
-            tails.delete(filename)
-        } else {
-            start(filename)
-        }
+  for await (const event of watcher) {
+    const filename = event.filename;
+    if (Array.from(tails.keys()).includes(filename)) {
+      tails.get(filename).kill();
+      tails.delete(filename);
+    } else {
+      start(filename);
     }
-})()
+  }
+})();
+
+/**
+ * @param {Date} date
+ */
+function toDatetimeString(date) {
+  const paddingZero = (str) => {
+    if (str.length == 2) {
+      return str;
+    } else {
+      return "0" + str;
+    }
+  };
+
+  const y = paddingZero(date.getFullYear().toString(10));
+  const mo = paddingZero((date.getMonth() + 1).toString(10));
+  const d = paddingZero(date.getDate().toString(10));
+  const h = paddingZero(date.getHours().toString(10));
+  const mi = paddingZero(date.getMinutes().toString(10));
+  const s = paddingZero(date.getSeconds().toString(10));
+
+  return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+}
