@@ -6,11 +6,19 @@ const { env } = require("node:process");
 const mysql = require("mysql2");
 const { exit } = require("process");
 
-const con = mysql.createConnection({
+// const con = mysql.createConnection({
+//   host: env["MYSQL_HOST"],
+//   user: env["MYSQL_USER"],
+//   password: env["MYSQL_PASSWORD"],
+//   database: env["MYSQL_DATABASE"],
+// });
+
+const con = mysql.createPool({
   host: env["MYSQL_HOST"],
   user: env["MYSQL_USER"],
   password: env["MYSQL_PASSWORD"],
   database: env["MYSQL_DATABASE"],
+  connectionLimit: 30,
 });
 
 /** @type {Map<string, ChildProcess>} */
@@ -22,15 +30,30 @@ function start(filename) {
   const [pod, ns] = filename.split("_");
 
   tail.stdout.on("data", (data) => {
+    const lines = data
+      .toString()
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+
+    const queryPlaceholder = Array.from({ length: lines.length })
+      .map(() => "(?, ?, ?, ?)")
+      .join(", ");
+
+    const args = lines.flatMap((line) => [
+      line,
+      ns,
+      pod,
+      toDatetimeString(new Date()),
+    ]);
+
+    console.time(data.toString().slice(0, 100));
+
     con.query(
-      "insert into log set ?",
-      {
-        log_value: data.toString(),
-        ns,
-        pod,
-        created_datetime: toDatetimeString(new Date()),
-      },
+      "insert into log (log_value, ns, pod, created_datetime) values " +
+        queryPlaceholder,
+      args,
       (err) => {
+        console.timeEnd(data.toString().slice(0, 100));
         if (err) {
           console.error(err);
           exit(1);
