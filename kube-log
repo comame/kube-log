@@ -46,14 +46,11 @@ function start(filename) {
       toDatetimeString(new Date()),
     ]);
 
-    console.time(data.toString().slice(0, 100));
-
     con.query(
       "insert into log (log_value, ns, pod, created_datetime) values " +
         queryPlaceholder,
       args,
-      (err) => {
-        console.timeEnd(data.toString().slice(0, 100));
+      (err, result, fields) => {
         if (err) {
           console.error(err);
           exit(1);
