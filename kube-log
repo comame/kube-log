@@ -21,6 +21,9 @@ const con = mysql.createPool({
   connectionLimit: 30,
 });
 
+const ignoreListEnv = env["IGNORE_NS"] ?? "";
+const ignoreList = ignoreListEnv.split(",");
+
 /** @type {Map<string, ChildProcess>} */
 const tails = new Map();
 
@@ -28,6 +31,10 @@ const tails = new Map();
 function start(filename) {
   const tail = spawn("/bin/tail", ["-f", `/var/log/containers/${filename}`]);
   const [pod, ns] = filename.split("_");
+  if (ignoreList.includes(ns)) {
+    console.log(`Skipped ${ns} ${pod}`);
+    return;
+  }
 
   tail.stdout.on("data", (data) => {
     const lines = data
