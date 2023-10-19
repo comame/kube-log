@@ -1,24 +1,18 @@
 #! /usr/bin/env node
 
+// TODO: MySQL への追加でコケがちなので、キューイングする
+
 const { spawn, ChildProcess } = require("child_process");
 const { readdir, watch } = require("fs/promises");
 const { env } = require("node:process");
 const mysql = require("mysql2");
-const { exit } = require("process");
-
-// const con = mysql.createConnection({
-//   host: env["MYSQL_HOST"],
-//   user: env["MYSQL_USER"],
-//   password: env["MYSQL_PASSWORD"],
-//   database: env["MYSQL_DATABASE"],
-// });
 
 const con = mysql.createPool({
   host: env["MYSQL_HOST"],
   user: env["MYSQL_USER"],
   password: env["MYSQL_PASSWORD"],
   database: env["MYSQL_DATABASE"],
-  connectionLimit: 30,
+  connectionLimit: 10,
 });
 
 const ignoreListEnv = env["IGNORE_NS"] ?? "";
@@ -26,6 +20,12 @@ const ignoreList = ignoreListEnv.split(",");
 
 /** @type {Map<string, ChildProcess>} */
 const tails = new Map();
+
+/**
+ * @type {[string, string, string, string][]}
+ * log, ns, pod, datetime
+ * */
+const logQueue = [];
 
 /** @param filename {string} */
 function start(filename) {
@@ -42,36 +42,54 @@ function start(filename) {
       .split("\n")
       .filter((l) => l.trim() !== "");
 
-    const queryPlaceholder = Array.from({ length: lines.length })
-      .map(() => "(?, ?, ?, ?)")
-      .join(", ");
+    const now = toDatetimeString(new Date());
 
-    const args = lines.flatMap((line) => [
-      line,
-      ns,
-      pod,
-      toDatetimeString(new Date()),
-    ]);
-
-    con.query(
-      "insert into log (log_value, ns, pod, created_datetime) values " +
-        queryPlaceholder,
-      args,
-      (err, result, fields) => {
-        if (err) {
-          console.error(err);
-          exit(1);
-        }
-      }
-    );
+    for (const line of lines) {
+      enqueue(line, ns, pod, now);
+    }
   });
   tail.on("exit", () => {
     tails.delete(filename);
-    console.log(`logger-main:Exit ${filename}`);
   });
-  console.log(`logger-main:Start ${filename}`);
   tails.set(filename, tail);
 }
+
+setInterval(() => {
+  const logs = dequeue(Math.trunc(logQueue.length / 2) + 1);
+  if (logs.length === 0) {
+    return;
+  }
+
+  const queryPlaceholder = Array.from({ length: logs.length })
+    .map(() => "(?, ?, ?, ?)")
+    .join(", ");
+
+  const args = logs.flatMap(([log, ns, pod, datetime]) => [
+    log,
+    ns,
+    pod,
+    datetime,
+  ]);
+
+  const now = toDatetimeString(new Date());
+  console.time(now);
+
+  con.query(
+    "insert into log (log_value, ns, pod, created_datetime) values " +
+      queryPlaceholder,
+    args,
+    (err, result, fields) => {
+      console.log(logs.length);
+      console.timeEnd(now);
+      if (err) {
+        warikomi(logs);
+        console.error(err);
+      }
+    }
+  );
+}, 1000 * 1);
+
+console.log("start");
 
 readdir("/var/log/containers").then((items) => {
   items.forEach((item) => {
@@ -95,6 +113,33 @@ readdir("/var/log/containers").then((items) => {
 })();
 
 /**
+ * @param {string} log
+ * @param {string} ns
+ * @param {string} pod
+ * @param {string} datetime
+ */
+function enqueue(log, ns, pod, datetime) {
+  logQueue.push([log, ns, pod, datetime]);
+}
+/**
+ * @param {string} log
+ * @param {string} ns
+ * @param {string} pod
+ * @param {string} datetime
+ */
+function warikomi(log, ns, pod, datetime) {
+  logQueue.unshift([log, ns, pod, datetime]);
+}
+
+/**
+ * @param {number} size
+ * @returns {[string, string, string, string]}
+ */
+function dequeue(size) {
+  return logQueue.splice(0, size);
+}
+
+/**
  * @param {Date} date
  */
 function toDatetimeString(date) {
@@ -106,7 +151,7 @@ function toDatetimeString(date) {
     }
   };
 
-  const y = paddingZero(date.getFullYear().toString(10));
+  const y = date.getFullYear().toString(10);
   const mo = paddingZero((date.getMonth() + 1).toString(10));
   const d = paddingZero(date.getDate().toString(10));
   const h = paddingZero(date.getHours().toString(10));
